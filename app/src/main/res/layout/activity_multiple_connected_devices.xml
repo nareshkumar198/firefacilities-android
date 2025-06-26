@@ -1,0 +1,31 @@
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical" >
+
+    <!-- list of connected devices -->
+
+    <ListView
+        android:id="@+id/lvConnectedDevices"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:divider="@android:color/holo_orange_dark"
+        android:dividerHeight="2dp" />
+    <!-- android:layout_above="@id/btnScan" -->
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Hello World!"
+        android:id="@+id/hintTv" />
+
+    <include
+        android:id="@+id/includeBtnScan"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentLeft="true"
+        android:layout_alignParentRight="true"
+        layout="@layout/activity_fire_facility" />
+
+</RelativeLayout>

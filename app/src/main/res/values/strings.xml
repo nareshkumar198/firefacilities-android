@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">Fire Facilities</string>
+    <string name="action_settings">Settings</string>
+
+
+    <!-- device details -->
+    <string name="label_device_details">Device Details</string>
+    <string name="label_device_name">Name: </string>
+    <string name="label_device_address">Address: </string>
+    <string name="label_device_rssi">RSSI: </string>
+    <string name="label_device_battery">Battery: </string>
+
+    <string name="non_applicable">0x7f050058</string>
+
+    <string name="version_number">Version 4.18.1.13</string>
+
+    <!-- General -->
+    <string name="btn_scan">Scan</string>
+    <string name="btn_connecting">Connecting..</string>
+    <string name="btn_disconnect">Disconnect</string>
+
+</resources>

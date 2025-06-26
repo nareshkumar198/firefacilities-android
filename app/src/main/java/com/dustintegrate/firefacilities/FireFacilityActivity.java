@@ -1,0 +1,836 @@
+package com.dustintegrate.firefacilities;
+
+/***********************************************************************
+ *   FireFacilitiesActivity
+ *
+ *   Revision:
+ *   v1.17
+ *   Adds validation to the ble messaging to keep eroneous data from displaying.
+ *   removes non ascii characters and filters for extra data at end and beginning of ble string.
+ *
+ *   v1.16
+ *   Disable the device selection after a user initiates a connection to prevent problems due to multiple device connect attempts.
+ *   Immediately change status to connecting to show activity even when ble device communication is slow to trigger callbacks such
+ *   was found with the Samsung Galaxy S7
+ *
+ *   v1.15
+ *   Selecting the ble device from the list only connects if not already connected and does nothing else.
+ *
+ *   v1.14
+ *   Clear ble devices from the list when the disconnect button is pressed.
+ *   
+ *   v1.13
+ *   Scan only when initiated by the user.  Add disconnect to button behavior.
+ *
+ *   v1.12
+ *   Clear thermocouples and other data after disconnect.
+ *
+ *   v1.11
+ *   Make TM: just display whatever is sent to be more flexible in requirements of the sender as to message format.
+ *
+ *   v1.10
+ *   Changes to accept different messages with TM:
+ *
+ *   v.1.9
+ *   2016-08-17
+ *   change parsing to show time without seconds and with added LOG status
+ *   "TM: 23:12P_LOG" (means logging) or "TM: 12:34P" (means not logging) or A for AM instead of P
+ *
+ *   v.1.8
+ *   2016-08-16
+ *   fix Battery extraneous character status, possible values are LO or OK
+ *
+ *   v.1.7
+ *   2016-08-15
+ *   fix parsing TRUE for alarm status and fix extraneous character for time
+ *
+ *   v.1.6
+ *   2016-08-14
+ *   add battery, time and max display and messaging.
+ *   "M: 0078 B: OK" or "M: 0078 B: LO" for max and battery status
+ *   "TM: 12:34:45P" or A for AM instead of P
+ *
+ *   v.1.5
+ *   Fix temp parsing, parsing an int with the units character C was broken
+ *
+ *
+ *   v.1.4
+ *   2016-08-07
+ *   fix units parsing
+ *
+ *
+ *   v.1.3
+ *   Add OPEN and degrees C vs F
+ *   "T1: 77.0F FALSE" of C for Celsius
+ *
+ *   v.1.2
+ *   2016-08-06
+ *   fix scanning
+ *
+ *   v.1.1
+ *   2016-08-03
+ *   Set status yellow when OPEN recieved
+ *   "T1: 0.0 OPEN"
+ *
+ *   v.1
+ *   Initial working App to accept ble packet and update ui based on packet
+ *
+ *************************************************************************/
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.bluetooth.BluetoothProfile;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.net.Uri;
+import android.nfc.Tag;
+import android.os.Bundle;
+
+import android.os.Vibrator;
+import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.ContextCompat;
+import android.support.v7.app.NotificationCompat;
+import android.support.v7.widget.AppCompatRadioButton;
+import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.ListView;
+import android.widget.RadioButton;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import com.google.android.gms.appindexing.Action;
+import com.google.android.gms.appindexing.AppIndex;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.lairdtech.lairdtoolkit.BleBaseActivity;
+
+import com.lairdtech.lairdtoolkit.serialdevice.SerialManager;
+import com.lairdtech.lairdtoolkit.serialdevice.SerialManagerUiCallback;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Observable;
+import java.util.Observer;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Handler;
+import java.util.regex.Pattern;
+
+
+public class FireFacilityActivity extends BleBaseActivity implements SerialManagerUiCallback {
+    final boolean TESTING = false;
+    final boolean DISPLAYRX = false;
+
+    static final int MY_PERMISSIONS_REQUEST_COURSE_LOCATION = 9856;
+    ArrayList<ThermoCouple> thermoCouples;
+    ThermoCoupleViewAdapter tcViewAdapter;
+    ThermoCoupleVibrateStatus thermoCoupleVibrateStatus;
+
+    boolean thread_running = false;
+
+    boolean parse_error = false;
+    String DEBUG = "DEBUG";
+
+    int i = 0, j = 0;
+
+    Uri notification;
+    Ringtone r;
+
+    //data for testing the ui
+    String[] test_ble_data2 = {
+};/*
+            "TM: 8:76:54AM",
+            "TM: 98:76_LX",
+            "M: 7778 B: LOdfg",
+            "T4: 23.2C FALSE",
+            "TM: 12:34:56LX",
+            "TM: 34:56:78P_L",
+            "T7: 5234.0F TRUE",
+            "TM: 98:76:54A_F",
+            "xdcM: 0078 B: OKv",
+            "TM: 8:76:54A_F",
+            "TM: 8:36:12A_L",
+            "FFT3: 56.8F FALSE",
+            "M: 555 B: LOW",
+            "TM: 12:34:56AM",
+            "TM: 3:56:78S",
+            "T7: 134.0F FALSE",
+            "M:1234 B: OK",
+            "xdvM: 9978 B: LO"
+    };
+*/
+
+
+    Context context;
+    String toastString;
+    Toast toast;
+    int duration = Toast.LENGTH_SHORT;
+
+    private Button mBtnScan;
+
+    private SerialManager mSerialManager;
+    /**
+     * ATTENTION: This was auto-generated to implement the App Indexing API.
+     * See https://g.co/AppIndexing/AndroidStudio for more information.
+     */
+    private GoogleApiClient client;
+
+    final Pattern timePerfect = Pattern.compile("TM:[ ]*[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}[ampALMPFS_ ]*");
+    final Pattern timeImperfect = Pattern.compile(".*TM:[ ]*[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}[ampALMPFS_ ]*.*");
+    final Pattern maxAndBattPerfect = Pattern.compile("M:[ ]+[0-9]{1,4}[ ]+B:[ ]+[LOWK]{2,3}");
+    final Pattern maxAndBattImperfect = Pattern.compile(".*M:[ ]+[0-9]{1,4}[ ]+B:[ ]+[LOWK]{2,3}.*");
+    private Timer timer;
+
+    @SuppressLint("MissingSuperCall")
+    @Override
+    protected void onCreate(final Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState, R.layout.activity_fire_facility);
+        context = getApplicationContext();
+
+        //for testing
+        if(TESTING) {
+            timer = new Timer();
+            TimerTask testTask = new TestTask();
+            timer.scheduleAtFixedRate(testTask, 1000, 1000);
+        }
+
+
+        try {
+            notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+            r = RingtoneManager.getRingtone(getApplicationContext(), notification);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        mSerialManager = new SerialManager(this, this);
+        setBleBaseDeviceManager(mSerialManager);
+
+        initialiseDialogFoundDevices("VSP");
+
+        // Here, thisActivity is the current activity
+        if (ContextCompat.checkSelfPermission(this,
+                Manifest.permission.ACCESS_COARSE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+
+            // No explanation needed, we can request the permission.
+
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.ACCESS_COARSE_LOCATION},
+                    MY_PERMISSIONS_REQUEST_COURSE_LOCATION);
+
+            // MY_PERMISSIONS_REQUEST_READ_CONTACTS is an
+            // app-defined int constant. The callback method gets the
+            // result of the request
+        }
+        client = new GoogleApiClient.Builder(this).addApi(AppIndex.API).build();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode,
+                                           String permissions[], int[] grantResults) {
+        switch (requestCode) {
+            case MY_PERMISSIONS_REQUEST_COURSE_LOCATION: {
+                // If request is cancelled, the result arrays are empty.
+                if (grantResults.length > 0
+                        && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+
+                    // permission was granted, yay! Do the
+                    // contacts-related task you need to do.
+
+                } else {
+
+                    // permission denied, boo! Disable the
+                    // functionality that depends on this permission.
+                }
+                return;
+            }
+
+            // other 'case' lines to check for other
+            // permissions this app might request
+        }
+    }
+
+    public boolean onCreateOptionsMenu(Menu menu) {
+        // Inflate the menu; this adds items to the action bar if it is present.
+        //getMenuInflater().inflate(R.menu.menu_fire_facility, menu);
+        return super.onCreateOptionsMenu(menu);
+    }
+
+
+    public boolean onOptionsItemSelected(MenuItem item) {
+        // Handle action bar item clicks here. The action bar will
+        // automatically handle clicks on the Home/Up button, so long
+        // as you specify a parent activity in AndroidManifest.xml.
+        int id = item.getItemId();
+
+        //noinspection SimplifiableIfStatement
+        if (id == R.id.action_settings) {
+            return true;
+        }
+
+        return super.onOptionsItemSelected(item);
+    }
+
+    //for testing
+
+    class TestTask extends TimerTask {
+        public void run() {
+            onUiReceiveData(test_ble_data2[i]);
+            i++;
+            if(i == 18) {
+                i = 0;
+                j++;
+                if(j==2)
+                timer.cancel();
+            }
+        }
+    }
+
+
+    
+    TimerTask alertSoundTask = new TimerTask() {
+        @Override
+        public void run() {
+            if (thermoCoupleVibrateStatus.vibrating)
+                r.play();
+        }
+    };
+
+    @Override
+    protected void onResume() {
+
+        super.onResume();
+
+        setBleBaseDeviceManager(mSerialManager);
+
+        if (thermoCouples == null) {
+            thermoCoupleVibrateStatus = new ThermoCoupleVibrateStatus();
+        }
+
+        if (thermoCouples == null) {
+            thermoCouples = new ArrayList<ThermoCouple>();
+            tcViewAdapter = new ThermoCoupleViewAdapter(this, thermoCouples);
+            for (int i = 0; i < 9; i++) {
+                ThermoCouple new_tc = new ThermoCouple(thermoCoupleVibrateStatus);
+                thermoCouples.add(new_tc);
+            }
+            ListView listView = (ListView) findViewById(R.id.tcList);
+            listView.setAdapter(tcViewAdapter);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        clearThermoCouples();
+    }
+
+    @Override
+    public void onUiDisconnected(final int status)
+    {
+        super.onUiDisconnected(status);
+        // set views to default
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                clearThermoCouples();
+                clearFooterStatus();
+            }
+        });
+    }
+
+    public String stringToHex(String string) {
+        StringBuilder buf = new StringBuilder(200);
+        for (char ch: string.toCharArray()) {
+            if (buf.length() > 0)
+                buf.append(' ');
+            buf.append(String.format("%02x", (int) ch));
+        }
+        return buf.toString();
+    }
+
+
+    @Override
+    public void onUiVspServiceFound(boolean found) {
+
+    }
+
+    @Override
+    public void onUiSendDataSuccess(String dataSend) {
+
+    }
+
+    @Override
+    public void onUiReceiveData(final String dataReceived) {
+        if(thread_running)
+            return;
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                String dataIn;
+                dataIn = dataReceived.replaceAll("[^\\x20-\\x7E]", "");
+                //dataIn = dataReceived.replaceAll("\\p{Cc}", "");
+                String[] tc_data;
+                int i = 0;
+                int tc_index = 0;
+                char tc_unit = 'F';
+                int start_index = 0;
+                int end_index = 0;
+
+                TextView textView;
+                Double tc_temp = 0.0;
+                int tc_status = ThermoCouple.SENSOR_STATUS_UNKNOWN;
+
+                tc_data = dataIn.split(":");
+                if (tc_data == null)
+                    return;
+
+                parse_error = false;
+
+
+                try {
+                    // time?
+                    //if (dataIn.indexOf("TM:") > -1) {
+                    /*
+                       just post if time messages matches the regex
+                    */
+                    if (timePerfect.matcher(dataIn).matches()){
+                        textView = (TextView) findViewById(R.id.time);
+                        //textView.setText("T: " + dataIn.substring(dataIn.indexOf("TM:") + 3));
+                        textView.setText(dataIn.replaceFirst("M", ""));
+                        /*
+                          if the time string is in there but surrounded by garbage, extract it.
+                         */
+                    } else if (timeImperfect.matcher(dataIn).matches()){
+                        textView = (TextView) findViewById(R.id.time);
+                        end_index = dataIn.length();
+                        start_index = dataIn.indexOf("TM:");
+                        while(start_index < end_index) {
+                            if (timePerfect.matcher(dataIn.substring(start_index,end_index)).matches()) {
+                                textView.setText(dataIn.substring(start_index,end_index).replaceFirst("M", ""));
+                                break;
+                            }
+                            end_index--;
+                            if(start_index >= end_index)
+                                parse_error = true;
+                        }
+                    } else {
+
+                        tc_data = dataIn.split(":");
+                        if (tc_data.length == 2) {
+                            parse_error = false;
+                            tc_data = dataIn.split("\\s+");
+                            if (tc_data.length >= 3) {
+                                try {
+                                    if (tc_data[0].indexOf("T") == -1 || tc_data[0].indexOf("T") + 1 >= tc_data[0].length()) {
+                                        parse_error = true;
+                                        return;
+                                    }
+                                    tc_index = Integer.parseInt(tc_data[0].charAt(tc_data[0].indexOf("T") + 1) + "");
+                                } catch (NumberFormatException e) {
+                                    Log.d(DEBUG, "tc_index error");
+                                    parse_error = true;
+                                    e.printStackTrace();
+                                    return;
+                                }
+                                try {
+                                    if ((tc_data[1].length() - 2) <= 0) {
+                                        parse_error = true;
+                                        return;
+                                    }
+                                    tc_temp = tc_temp.parseDouble(tc_data[1].substring(0, tc_data[1].length() - 2));
+                                } catch (NumberFormatException e) {
+                                    Log.d(DEBUG, "tc_temp error");
+                                    parse_error = true;
+                                    e.printStackTrace();
+                                    return;
+                                }
+
+                                try {
+                                    tc_unit = tc_data[1].charAt(tc_data[1].length() - 1);
+                                } catch (NumberFormatException e) {
+                                    Log.d(DEBUG, "tc_unit error");
+                                    parse_error = true;
+                                    e.printStackTrace();
+                                    return;
+                                }
+                                try {
+                                    if (dataIn.indexOf("TRUE") > -1)
+                                        tc_status = ThermoCouple.SENSOR_STATUS_TRUE;
+                                    else if (dataIn.indexOf("FALSE") > -1)
+                                        tc_status = ThermoCouple.SENSOR_STATUS_FALSE;
+                                    else if (dataIn.indexOf("OPEN") > -1)
+                                        tc_status = ThermoCouple.SENSOR_STATUS_UNKNOWN;
+                                    else {
+                                        parse_error = true;
+                                        return;
+                                    }
+                                } catch (Exception e) {
+                                    Log.d(DEBUG, "tc_status error");
+                                    parse_error = true;
+                                    e.printStackTrace();
+                                }
+                                if (!parse_error) {
+                                    thermoCouples.get(tc_index - 1).setTemp(tc_temp);
+                                    thermoCouples.get(tc_index - 1).setStatus(tc_status);
+                                    thermoCouples.get(tc_index - 1).setUnits(tc_unit);
+                                    Log.d(DEBUG, "T" + tc_index + ": " + thermoCouples.get(tc_index - 1).getTemp() + " " + thermoCouples.get(tc_index - 1).getUnits());
+                                    tcViewAdapter.notifyDataSetChanged();
+                                }
+                            }
+                        } else if (tc_data.length >= 3) {
+                            // has 2 : so splits to 3 strings
+                            // this is the max and battery status or the time
+
+                            //if (dataIn.indexOf("M:") > -1) {
+                            /*
+                            Check for max and battery string
+                             */
+                            if (maxAndBattPerfect.matcher(dataIn).matches()){
+                                tc_data = dataIn.split("\\s+");
+                            /*
+                            if the max and battery string string is in there but surrounded by garbage, extract it.
+                            */
+                            } else if (maxAndBattImperfect.matcher(dataIn).matches()) {
+                                end_index = dataIn.length();
+                                start_index = dataIn.indexOf("M:");
+                                while (start_index < end_index) {
+                                    if (maxAndBattPerfect.matcher(dataIn.substring(start_index, end_index)).matches()) {
+                                        tc_data = dataIn.substring(start_index, end_index).split("\\s+");
+                                        break;
+                                    }
+                                    end_index--;
+                                }
+                            } else {
+                                parse_error = true;
+                            }
+
+                                //if (tc_data.length < 4)
+                            if(!parse_error) {
+                                //check for battery status, else error return
+                                textView = (TextView) findViewById(R.id.battery);
+                                if (tc_data[3].indexOf("LO") > -1)
+                                    textView.setText("Batt: " + "LO");
+                                else if (tc_data[3].indexOf("OK") > -1)
+                                    textView.setText("Batt: " + "OK");
+                                else
+                                    return;
+
+                                textView = (TextView) findViewById(R.id.max);
+                                textView.setText("M: " + tc_data[1]);
+                            }
+                        } else {
+                            parse_error = true;
+                        }
+                    }
+
+                } catch (NumberFormatException e) {
+                    parse_error = true;
+                    e.printStackTrace();
+                }
+                if(DISPLAYRX || TESTING) {
+                    textView = (TextView) findViewById(R.id.bleStatus);
+                    if (parse_error || DISPLAYRX) {
+                        textView.setText("error- hex: " + stringToHex(dataReceived) + "string: " + dataReceived);
+                    }
+                }
+                return;
+            }
+        });
+    }
+
+    @Override
+    public void onUiUploaded() {
+
+    }
+
+    @Override
+    public void onConnectionStateChange(final int newStatus) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                clearThermoCouples();
+                clearFooterStatus();
+            }
+        });
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+
+        // ATTENTION: This was auto-generated to implement the App Indexing API.
+        // See https://g.co/AppIndexing/AndroidStudio for more information.
+        client.connect();
+        Action viewAction = Action.newAction(
+                Action.TYPE_VIEW, // TODO: choose an action type.
+                "FireFacility Page", // TODO: Define a title for the content shown.
+                // TODO: If you have web page content that matches this app activity's content,
+                // make sure this auto-generated web page URL is correct.
+                // Otherwise, set the URL to null.
+                Uri.parse("http://host/path"),
+                // TODO: Make sure this auto-generated app URL is correct.
+                Uri.parse("android-app://com.dustintegrate.firefacilities/http/host/path")
+        );
+        AppIndex.AppIndexApi.start(client, viewAction);
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+
+        // ATTENTION: This was auto-generated to implement the App Indexing API.
+        // See https://g.co/AppIndexing/AndroidStudio for more information.
+        Action viewAction = Action.newAction(
+                Action.TYPE_VIEW, // TODO: choose an action type.
+                "FireFacility Page", // TODO: Define a title for the content shown.
+                // TODO: If you have web page content that matches this app activity's content,
+                // make sure this auto-generated web page URL is correct.
+                // Otherwise, set the URL to null.
+                Uri.parse("http://host/path"),
+                // TODO: Make sure this auto-generated app URL is correct.
+                Uri.parse("android-app://com.dustintegrate.firefacilities/http/host/path")
+        );
+        AppIndex.AppIndexApi.end(client, viewAction);
+        client.disconnect();
+    }
+
+    private class ThermoCoupleVibrateStatus implements Observer {
+        Vibrator vibrator;
+        Timer timer1;
+        boolean vibrating = false;
+        int dash = 400;
+        int gap = 400;
+        long[] vibrate_pattern = {dash, gap};
+
+        ThermoCoupleVibrateStatus() {
+            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            try {
+                timer1 = new Timer();
+                timer1.scheduleAtFixedRate(alertSoundTask, 0, 400);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
+
+        @Override
+        public void update(Observable o, Object arg) {
+            int status = ((ThermoCouple) o).getStatus();
+
+            //check if any alarms set
+            for (ThermoCouple tc : thermoCouples) {
+                if (tc.getStatus() == ThermoCouple.SENSOR_STATUS_TRUE) {
+                    if (!vibrating) {
+                        // start vibrator;
+                        vibrating = true;
+                        vibrator.vibrate(vibrate_pattern, 0);
+                    }
+                    return;
+                }
+            }
+
+            //if none set, turn off vibrate if needed
+            if (vibrating) {
+                vibrating = false;
+                vibrator.cancel();
+            }
+        }
+    }
+
+    public void clearThermoCouples() {
+        TextView tv;
+
+        for (ThermoCouple tc : thermoCouples) {
+            tc.setTemp(0.0);
+            tc.setStatus(ThermoCouple.SENSOR_STATUS_UNKNOWN);
+        }
+        this.thermoCoupleVibrateStatus.vibrator.cancel();
+        tcViewAdapter.notifyDataSetChanged();
+
+        tv = (TextView)findViewById(R.id.battery);
+        tv.setText("Batt:");
+
+        tv = (TextView)findViewById(R.id.max);
+        tv.setText("M:");
+
+        tv = (TextView)findViewById(R.id.time);
+        tv.setText("T:");
+    }
+
+    public void clearFooterStatus() {
+        TextView tv;
+        tv = (TextView)findViewById(R.id.max);
+        tv.setText("M: ");
+
+        tv = (TextView)findViewById(R.id.battery);
+        tv.setText("Batt: ");
+
+        tv = (TextView)findViewById(R.id.time);
+        tv.setText("   T: ");
+    }
+}
+
+class ThermoCouple extends Observable{
+    static int SENSOR_STATUS_FALSE = 0;
+    static int SENSOR_STATUS_TRUE = 1;
+    static int SENSOR_STATUS_UNKNOWN = 2;
+
+    double temperature;
+    //private int sensorStatus;
+    int sensorStatus;
+
+    char temp_units;
+
+    ThermoCouple(Observer o) {
+        this.addObserver(o);
+        sensorStatus = SENSOR_STATUS_UNKNOWN;
+        temperature = 0.00;
+        temp_units = 'F';
+    }
+
+/*
+    public void setStatus(int new_status) {
+        sensorStatus = new_status;
+    }
+
+    public int getStatus(){
+        return sensorStatus;
+    }
+*/
+
+    public ThermoCouple setStatus(int new_status) {
+        synchronized (this) {
+            if(new_status != sensorStatus) {
+                sensorStatus = new_status;
+                setChanged();
+                notifyObservers();
+            }
+        }
+        return this;
+    }
+
+    public int getStatus(){
+        return sensorStatus;
+    }
+
+    public ThermoCouple setTemp(double new_temp){
+        temperature = new_temp;
+        return this;
+    }
+
+    public double getTemp(){
+        return temperature;
+    }
+
+    public ThermoCouple setUnits( char units ){
+        if(units == 'F' || units == 'C')
+            temp_units = units;
+        return this;
+    }
+
+    public char getUnits() { return temp_units; }
+}
+
+class ThermoCoupleViewAdapter extends ArrayAdapter<ThermoCouple> {
+    StringBuilder stringBuilder;
+    ColorStateList trueColor;
+    ColorStateList falseColor;
+    ColorStateList unknownColor;
+
+    public ThermoCoupleViewAdapter(Context context, ArrayList<ThermoCouple> thermocouple) {
+        super(context, 0, thermocouple);
+        stringBuilder = new StringBuilder(20);
+
+        trueColor = new ColorStateList(
+                new int[][]{
+                        new int[]{-android.R.attr.state_checked},
+                        new int[]{android.R.attr.state_checked}
+                },
+                new int[]{
+
+                        Color.RED
+                        , Color.RED,
+                }
+        );
+
+        falseColor = new ColorStateList(
+                new int[][]{
+                        new int[]{-android.R.attr.state_checked},
+                        new int[]{android.R.attr.state_checked}
+                },
+                new int[]{
+
+                        Color.GREEN
+                        , Color.GREEN,
+                }
+        );
+
+        unknownColor = new ColorStateList(
+                new int[][]{
+                        new int[]{-android.R.attr.state_checked},
+                        new int[]{android.R.attr.state_checked}
+                },
+                new int[]{
+
+                        Color.YELLOW
+                        , Color.YELLOW,
+                }
+        );
+    }
+
+    @Override
+    public View getView(int position, View convertView, ViewGroup parent) {
+        // Get the data item for this position
+        ThermoCouple thermocouple = getItem(position);
+        // Check if an existing view is being reused, otherwise inflate the view
+        if (convertView == null) {
+            convertView = LayoutInflater.from(getContext()).inflate(R.layout.thermocouple_view, parent, false);
+        }
+        // Lookup view for data population
+        TextView tcTextView = (TextView) convertView.findViewById(R.id.tc_index_text);
+        stringBuilder.setLength(0);
+        stringBuilder.append("TC").append(position + 1).append("(\u00B0");
+        stringBuilder.append(thermocouple.getUnits());
+        stringBuilder.append(")");
+        tcTextView.setText(stringBuilder.toString());
+
+        tcTextView = (TextView) convertView.findViewById(R.id.tc_temp);
+        stringBuilder.setLength(0);
+        stringBuilder.append(thermocouple.getTemp());
+        tcTextView.setText(stringBuilder.toString());
+
+        //RadioButton tcStatus = (RadioButton) convertView.findViewById(R.id.tc_status);
+        // Populate the data into the template view using the data object
+        //tcTemp.setText("T"+ position+1 +" : " + thermocouple.getTemp());
+        //tcStatus.setChecked(false);
+        //tcStatus.setChecked(thermocouple.getStatus());
+        // Return the completed view to render on screen
+        AppCompatRadioButton tcStatus;
+        tcStatus = (AppCompatRadioButton) convertView.findViewById(R.id.tc_status);
+
+
+        tcStatus.setSupportButtonTintList(null);
+        if(thermocouple.getStatus() == ThermoCouple.SENSOR_STATUS_UNKNOWN)
+            tcStatus.setSupportButtonTintList(unknownColor);
+        else if(thermocouple.getStatus() == ThermoCouple.SENSOR_STATUS_TRUE)
+            tcStatus.setSupportButtonTintList(trueColor);
+        else if(thermocouple.getStatus() == ThermoCouple.SENSOR_STATUS_FALSE)
+            tcStatus.setSupportButtonTintList(falseColor);
+
+        tcStatus.setChecked(true);
+        return convertView;
+    }
+}
